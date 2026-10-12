@@ -1,0 +1,28 @@
+{
+  "type": "node-cli",
+  "lang": "ts",
+  "pm": "npm",
+  "module": "esm",
+  "tsStrict": true,
+  "agentSource": "import",
+  "lockfile": ["package-lock.json"],
+  "port": null,
+  "script": {
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/check-surface.mjs"
+  },
+  "file": [
+    "README.md",
+    "CHANGELOG.md",
+    "ROADMAP.md",
+    "docs/roadmap-rejected.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "docs/CONVENTIONS.md",
+    ".env.example",
+    "package.json",
+    "tsconfig.json",
+    "src/index.ts",
+    "src/engagement.ts"
+  ]
+}

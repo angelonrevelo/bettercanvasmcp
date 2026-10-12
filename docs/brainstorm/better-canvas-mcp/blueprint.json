@@ -1,0 +1,264 @@
+{
+  "mode": "new",
+  "idea": {
+    "name": "better-canvas-mcp",
+    "one_liner": "A local read-only Canvas MCP so a student can see work that due-date overrides, New Quizzes, group spaces, and files hide from the popular instructor servers.",
+    "north_star": "A student asks what they still owe and the answer uses submissions/self plus those edges, on whatever Canvas host they set.",
+    "non_goal": [
+      "Not an instructor grading or course-building console.",
+      "Not a client that submits work, posts replies, or marks items read.",
+      "Not a hosted multi-tenant server."
+    ]
+  },
+  "repo": null,
+  "customer": {
+    "primary_persona": {
+      "who": "A college student who already uses an agent for coursework and has a Canvas personal access token.",
+      "jtbd": "Find out what is still owed when the assignment list, the planner, and the files disagree.",
+      "today": "They open Canvas in a browser, or paste a page into a chat, and miss overrides, group files, and New Quiz internals."
+    },
+    "secondary_segment": [
+      "A student whose school disables self-service tokens and issues them through IT."
+    ],
+    "accessibility": [
+      "The client is a local process, so a flaky campus network fails the call instead of a hosted queue.",
+      "Tool text is English because Canvas API copy is English."
+    ]
+  },
+  "competitor": [
+    {
+      "name": "No published Philippine Canvas MCP found as of 2026-10-12",
+      "kind": "local",
+      "source": "unverified",
+      "gap_vs_us": "A GitHub search for Canvas LMS MCP servers returned global instructor servers and no Philippine package, so a local student still has the browser."
+    },
+    {
+      "name": "vishalsachdev/canvas-mcp",
+      "kind": "global",
+      "source": "https://github.com/vishalsachdev/canvas-mcp",
+      "gap_vs_us": "It has student reads and a large instructor write surface. It does not treat a blocked New Quiz or a student-only effective due date as evidence, and its public host was retired."
+    },
+    {
+      "name": "DMontgomery40/mcp-canvas-lms",
+      "kind": "global",
+      "source": "https://github.com/DMontgomery40/mcp-canvas-lms",
+      "gap_vs_us": "It will submit an assignment and post to a discussion. A student asking what is owed does not want a tool that can turn in work, and it does not record student-token denials as blocked_or_absent."
+    },
+    {
+      "name": "Canvas in the browser, pasted into chat",
+      "kind": "substitute",
+      "source": "founder",
+      "gap_vs_us": "The page the student copies is one surface. Overrides, group files, and submission state stay behind other screens the paste never included."
+    }
+  ],
+  "moat": [
+    "A term of student-token probes that record blocked_or_absent instead of an empty list, so a rival who copies tool names still does not know which endpoint a student token can read."
+  ],
+  "product_form": {
+    "choice": "on_device",
+    "rationale": "The buyer is the student. They install a stdio process and put their own token in their own client config. That is how every maintained public Canvas MCP now tells people to run, after the hosted one was retired.",
+    "rejected": [
+      {
+        "form": "saas",
+        "why": "Instructure's API Policy of 12 August 2025 prohibits unapproved MCP access, and a shared host would hold other people's tokens."
+      },
+      {
+        "form": "api",
+        "why": "An API company sells to an integrator. This user already has Canvas's API and needs a local agent tool."
+      }
+    ]
+  },
+  "v1_cut": {
+    "jtbd": "Tell the token holder what is still owed, using submission state and the edges that hide work.",
+    "channel": "The public GitHub repository under angelonrevelo.",
+    "pricing_experiment": "MIT at a price of zero, same as the servers students already clone.",
+    "deferred": [
+      "An owed-work report command.",
+      "HTTP 429 retry.",
+      "A short tool profile.",
+      "One process for the engagement tools."
+    ]
+  },
+  "frontend": {
+    "page": ["readme", "tool-catalog", "client-config"],
+    "onboarding": {
+      "is_needed": true,
+      "why": "Time to first successful list_course is the whole onboard: host, token, restart the client."
+    },
+    "headline": "Know what you still owe in Canvas, including the work that is not on the assignment list.",
+    "brand_brief": {
+      "positioning": "The read-only Canvas MCP for students, against instructor consoles that miss due-date overrides, New Quizzes, group files, and submission truth.",
+      "audience": "College students who point an agent at their own Canvas token.",
+      "tone": "Plain and specific. Name the edge. Do not hype the tool count."
+    }
+  },
+  "backend": {
+    "runtime": "Node 20",
+    "framework": "The MCP TypeScript SDK over stdio, no HTTP framework",
+    "rejected": [
+      {
+        "option": "commander",
+        "why": "The process already parses a handful of flags. A CLI framework adds a dependency and no Canvas behavior."
+      }
+    ],
+    "api_boundary": [
+      "course read",
+      "submission read for the token holder",
+      "file text extraction",
+      "engagement snapshot on local disk"
+    ],
+    "data_store": "None for the read server. The engagement binary keeps a JSON snapshot under the user cache directory.",
+    "auth": "The caller's Canvas personal access token in the environment. The server does not store it.",
+    "rate_limit": "Canvas applies a dynamic per-token limit. This version retries dropped connections only. A 429 retry is deferred.",
+    "observability": "Errors go to stderr. There is no telemetry.",
+    "compute": "The student's own machine."
+  },
+  "ai": {
+    "is_used": false
+  },
+  "gtm": {
+    "channel": [
+      {
+        "name": "GitHub under angelonrevelo",
+        "first_experiment": "Publish the repo with the description and topics used on leakguard and onegrid, and a README that leads with the edges the popular servers miss.",
+        "is_primary": true
+      },
+      {
+        "name": "npm",
+        "first_experiment": "Publish better-canvas-mcp to npm only after the GitHub repo is the install path people can already clone.",
+        "is_primary": false
+      }
+    ],
+    "cac_hypothesis": {
+      "value": 0,
+      "currency": "PHP",
+      "unit": "per install",
+      "is_assumed": true
+    }
+  },
+  "money": {
+    "pricing": [
+      {
+        "plan": "MIT local install",
+        "value": 0,
+        "currency": "PHP",
+        "unit": "per install",
+        "is_assumed": true
+      }
+    ],
+    "build_cost": {
+      "value": 0,
+      "currency": "PHP",
+      "is_assumed": true
+    },
+    "monthly_run_cost": {
+      "value": 0,
+      "currency": "PHP",
+      "is_assumed": true
+    },
+    "breakeven": "There is no price. The cost is the author's machine and Canvas's own rate limit."
+  },
+  "constraint": [
+    "Read-only student token.",
+    "No hardcoded school host.",
+    "Publish under github.com/angelonrevelo.",
+    "Instructure's API Policy of 12 August 2025 prohibits unapproved MCP clients."
+  ],
+  "edge_case": [
+    "A due date that exists only on an override for this user.",
+    "A New Quiz whose internals return 403.",
+    "A group file that is not in the course files tab.",
+    "A stale course shell from an old term.",
+    "A PDF when pdftotext is not installed."
+  ],
+  "complaint": [
+    "The tool list is long and the agent calls the wrong one.",
+    "A 401 after the school expires the token, with no warning ahead of time."
+  ],
+  "bottleneck": [
+    "Student tokens that the school will not issue.",
+    "Instructure's prohibition on unapproved MCP access."
+  ],
+  "risk": [
+    {
+      "name": "Instructure or a school treats this repository as a prohibited API client.",
+      "mitigation": "Stay local and read-only, name the policy in the README, and do not host tokens.",
+      "kill_switch": "Archive the repository if Instructure sends a takedown or a school disables student personal access tokens for this use."
+    },
+    {
+      "name": "An agent submits work because a tool exists that can.",
+      "mitigation": "Do not add submit, post, or grade tools.",
+      "kill_switch": "If a write tool is merged, yank the release the same day."
+    },
+    {
+      "name": "A token lands in git.",
+      "mitigation": ".env is gitignored and .env.example has an empty token.",
+      "kill_switch": "If a real token is pushed, revoke it and purge the commit before any further release."
+    },
+    {
+      "name": "Blocked endpoints get reported as empty, so the agent says nothing is due.",
+      "mitigation": "Keep blocked_or_absent distinct from an empty list, and keep submissions/self as the completion source.",
+      "kill_switch": "If a live course shows a submitted assignment marked owed, stop recommending the server until that path is fixed."
+    },
+    {
+      "name": "The tool catalog is too large for the client.",
+      "mitigation": "A short owed profile is on the roadmap. Until then the README tells people which tools answer what is owed.",
+      "kill_switch": "If two client logs show the model dropping tools before it can call get_my_submission, the profile moves ahead of new endpoint families."
+    }
+  ],
+  "timeline": {
+    "ai_multiplier": {
+      "value": 3,
+      "is_assumed": true,
+      "note": "Typing the server and the docs compresses. A live Canvas check against a real token, and any school policy review, does not."
+    },
+    "phase": [
+      {
+        "name": "Public read server",
+        "week_start": 1,
+        "week_end": 2,
+        "deliverable": "The git repository under angelonrevelo, with both binaries, a host that must be set, and a green gate.",
+        "cut_line": "No owed-work command and no npm publish in this phase."
+      },
+      {
+        "name": "Owed-work report",
+        "week_start": 3,
+        "week_end": 6,
+        "deliverable": "A stdout report for one course that separates submission truth from planner and announcement context.",
+        "cut_line": "No instructor tools and no hosted endpoint."
+      }
+    ],
+    "team": [
+      {
+        "role": "founder",
+        "is_hired": false
+      }
+    ]
+  },
+  "endgame": {
+    "exit": "lifestyle",
+    "acquirer_type": [
+      "none planned"
+    ],
+    "rationale": "The public comps are MIT local tools. The one hosted Canvas MCP was retired, and Instructure's policy makes a company that holds student tokens a bad bet. The durable form is a tool the author keeps using."
+  },
+  "open_question": [
+    "Will Instructure treat a local student process as the MCP use banned in the 12 August 2025 API Policy, or only a server they did not register?",
+    "Does the Data Privacy Act household-affairs exclusion cover a published client that can also see group members?",
+    "Do student personal access tokens expire in 30 days on every Canvas host?",
+    "Is there a Philippine Canvas MCP the 2026-10-12 GitHub search missed?"
+  ],
+  "handoff": {
+    "setup_preset": "node-cli",
+    "roadmap_p0": [
+      "Require CANVAS_BASE_URL and refuse a hardcoded school.",
+      "Mark tools read-only in tools/list."
+    ]
+  },
+  "research": {
+    "agent_count": 2,
+    "claim_count": 7,
+    "downgraded_count": 18,
+    "dedupe_count": 3
+  }
+}
