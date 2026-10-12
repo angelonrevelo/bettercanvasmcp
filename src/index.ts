@@ -22,9 +22,90 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { createDecipheriv, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
+import { meetRequirement, mergeRequirement, requirementFromCanvas, requirementFromPrompt } from './requirement.js';
 
 const execFileAsync = promisify(execFile);
+
+interface ChromiumCookieStore {
+  label: string;
+  cookieFile: string;
+  keychainService: string;
+  keychainAccount: string;
+}
+
+async function execSafe(file: string, args: string[]): Promise<{ stdout: string; stderr?: string } | null> {
+  try {
+    const { stdout } = await execFileAsync(file, args, { encoding: 'utf8' });
+    return { stdout };
+  } catch (err) {
+    return null;
+  }
+}
+
+export async function extractCanvasSessionCookie(): Promise<{
+  source: string | null;
+  cookie_value: string | null;
+  store: string | null;
+  tried: string[];
+}> {
+  const support = join(process.env.HOME ?? '', 'Library', 'Application Support');
+  const hosts: string[] = (() => {
+    try {
+      return [new URL(BASE_URL).hostname];
+    } catch {
+      return [];
+    }
+  })();
+  const tried: string[] = [];
+  const stores: ChromiumCookieStore[] = [
+    { label: 'chrome', cookieFile: join(support, 'Google', 'Chrome', 'Default', 'Cookies'), keychainService: 'Chrome Safe Storage', keychainAccount: 'Chrome' },
+    { label: 'brave', cookieFile: join(support, 'BraveSoftware', 'Brave-Browser', 'Default', 'Cookies'), keychainService: 'Brave Safe Storage', keychainAccount: 'Brave' },
+    { label: 'edge', cookieFile: join(support, 'Microsoft Edge', 'Default', 'Cookies'), keychainService: 'Microsoft Edge Safe Storage', keychainAccount: 'Microsoft Edge' },
+    { label: 'arc', cookieFile: join(support, 'Arc', 'User Data', 'Default', 'Cookies'), keychainService: 'Arc Safe Storage', keychainAccount: 'Arc' },
+  ];
+  for (const store of stores) {
+    tried.push(store.label);
+    if (!existsSync(store.cookieFile)) continue;
+    const keyResult = await execSafe('/usr/bin/security', ['find-generic-password', '-w', '-a', store.keychainAccount, '-s', store.keychainService]);
+    if (!keyResult) continue;
+    const tmpParent = mkdtempSync(join(tmpdir(), "lq-"));
+    if (!tmpParent) continue;
+    const dbCopy = join(tmpParent, 'Cookies');
+    try {
+      copyFileSync(store.cookieFile, dbCopy);
+      if (existsSync(`${store.cookieFile}-wal`)) copyFileSync(`${store.cookieFile}-wal`, `${dbCopy}-wal`);
+      const query = await execSafe('/usr/bin/sqlite3', [dbCopy, '-json', `SELECT hex(encrypted_value) AS enc_hex, host_key FROM cookies WHERE name='canvas_session'`]);
+      rmSync(tmpParent, { recursive: true, force: true });
+      if (!query) continue;
+      const rows = JSON.parse(query.stdout) as Array<{ enc_hex?: string; host_key?: string }>;
+      for (const row of rows) {
+        if (!row.enc_hex) continue;
+        try {
+          const blob = Buffer.from(row.enc_hex, 'hex');
+          const prefix = blob.subarray(0, 3).toString();
+          if (prefix !== 'v10') continue;
+          const key = pbkdf2Sync(keyResult.stdout.trim(), 'saltysalt', 1003, 16, 'sha1');
+          const decipher = createDecipheriv('aes-128-cbc', key, Buffer.alloc(16, 0x20));
+          const plain = Buffer.concat([decipher.update(blob.subarray(3)), decipher.final()]);
+          const cookieValue = plain.toString('latin1').slice(32);
+          const hostKey = row.host_key ?? '';
+          const hostMatch = !hostKey || hosts.some((h) => hostKey === h || hostKey === `.${h}` || hostKey.endsWith(`.${h}`));
+          if (!hostMatch) continue;
+          return { source: 'os-crypt', cookie_value: cookieValue, store: store.label, tried };
+        } catch {
+          continue;
+        }
+      }
+    } finally {
+      rmSync(tmpParent, { recursive: true, force: true });
+    }
+  }
+  return { source: null, cookie_value: null, store: null, tried };
+}
+
 
 // ============================================================================
 // CLI args + config
@@ -52,7 +133,7 @@ if (!TOKEN) {
 }
 
 const BASE_URL = BASE_URL_RAW.replace(/\/+$/, '');
-const USER_AGENT = 'better-canvas-mcp/0.4.0 (+https://github.com/angelonrevelo/bettercanvasmcp)';
+const USER_AGENT = 'better-canvas-mcp/0.7.0 (+https://github.com/angelonrevelo/bettercanvasmcp)';
 
 function canvasHeader(accept: string): Record<string, string> {
   return { Authorization: `Bearer ${TOKEN}`, Accept: accept, 'User-Agent': USER_AGENT };
@@ -2277,7 +2358,7 @@ const tool: MCPTool[] = [
   },
   {
     name: 'get_discussion_context',
-    description: 'Fetch one discussion topic plus its Canvas entry tree/view, flattened counts, current-user post/reply counts, unread entry count, and optional bounded entry bodies.',
+    description: 'Fetch one discussion topic plus its entry counts and a deterministic requirement graph (initial post, peer reply, comment, feedback, attendance, form, lockdown). Counts come from Canvas fields and prompt keywords. is_met is null when completion cannot be seen.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2297,6 +2378,24 @@ const tool: MCPTool[] = [
         },
       },
       required: ['discussion_id'],
+    },
+  },
+  {
+    name: 'get_course_requirement_graph',
+    description: 'Build a keyword-and-field requirement graph for one course: discussions, assignments, quizzes, announcements, and the first page of wiki pages. Rows cover replies, comments, feedback, attendance, forms, and Lockdown Browser flags. This server does not start Lockdown Browser or submit a form.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        course_id: { type: 'string', description: COURSE_ID_DESC },
+        include_view: {
+          type: 'boolean',
+          description: 'When true, load discussion views to compare the current user against countable requirements. Defaults to true.',
+        },
+        max_discussion_view: {
+          type: 'number',
+          description: 'Maximum discussion views to load. Defaults to 20.',
+        },
+      },
     },
   },
   {
@@ -2386,9 +2485,45 @@ const tool: MCPTool[] = [
     },
   },
   {
-    name: 'extract_course',
-    description: 'Extract everything in the course (modules, pages, assignments, discussions, quizzes, announcements, files, plus categorized embeds — youtube/gsheets/gforms/etc). Single efficient call. Returns the same structure as the canvas-toolkit extractor.',
+    name: 'get_lockdown_quiz_access',
+    description: 'Accessibility view of Lockdown Browser exams in one read-only call: quizzes Canvas flags require_lockdown_browser, question bank preview, and the current user submission with its score, all readable through the token API without the Respondus client.',
     inputSchema: {
+      type: 'object',
+      properties: {
+        course_id: { type: 'string', description: COURSE_ID_DESC },
+        include_question_preview: {
+          type: 'boolean',
+          description: 'When true, probe the question bank for each Lockdown Browser quiz. Defaults to true.',
+        },
+        include_question_text: {
+          type: 'boolean',
+          description: 'When true, include question text in the preview. Defaults to true.',
+        },
+      },
+    },
+  },
+  {
+    name: 'get_lockdown_quiz_take',
+    description: 'Open or resume the current-user attempt for a Lockdown Browser quiz and return its questions so the agent can prepare answers. Preview mode (default) touches nothing; with preview false an attempt is started through the web take flow, and a time-limited quiz starts its timer. The server never answers or submits.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        course_id: { type: 'string', description: COURSE_ID_DESC },
+        quiz_id: { type: 'string', description: 'Lockdown Browser quiz id' },
+        preview: {
+          type: 'boolean',
+          description: 'When true, inspect without starting an attempt. Defaults to true.',
+        },
+        session_cookie: {
+          type: 'string',
+          description: 'Optional canvas_session cookie for the HTML take flow when the API refuses to start the attempt. Only sent when preview is false.',
+        },
+      },
+      required: ['quiz_id'],
+    },
+  },
+  {
+    name: 'extract_course',    description: 'Extract everything in the course (modules, pages, assignments, discussions, quizzes, announcements, files, plus categorized embeds — youtube/gsheets/gforms/etc). Single efficient call. Returns the same structure as the canvas-toolkit extractor.',    inputSchema: {
       type: 'object',
       properties: { course_id: { type: 'string', description: COURSE_ID_DESC } },
     },
@@ -5452,9 +5587,15 @@ function materialSignal(text: string, link: any[], fileId: string[], explicit: {
   const isReading = READING_RE.test(clean) || link.some((one) => (
     ['pdf', 'gdocs', 'gslides', 'youtube', 'canvas-file'].includes(String(one?.kind))
   )) || fileId.length > 0;
-  const isPeerReply = PEER_REPLY_RE.test(clean);
-  const isInitialPost = INITIAL_POST_RE.test(clean);
-  const isReplyRequired = !!explicit.is_discussion || REPLY_RE.test(clean) || isPeerReply || isInitialPost;
+  const promptRequirement = requirementFromPrompt(clean);
+  const isPeerReply = promptRequirement.some((one) => one.requirement_kind === 'peer_reply');
+  const isInitialPost = promptRequirement.some((one) => one.requirement_kind === 'initial_post');
+  const isReplyRequired = promptRequirement.some((one) => (
+    one.requirement_kind === 'peer_reply'
+    || one.requirement_kind === 'comment'
+    || one.requirement_kind === 'feedback'
+    || one.requirement_kind === 'initial_post'
+  ));
   const isGroupWork = !!explicit.is_group || GROUP_WORK_RE.test(clean);
   return {
     requirement_tag: requirementTag,
@@ -5467,9 +5608,15 @@ function materialSignal(text: string, link: any[], fileId: string[], explicit: {
     },
     reply_requirement: {
       is_required: isReplyRequired,
-      evidence: evidenceFor(clean, REPLY_RE),
-      kind: isPeerReply ? 'peer_reply' : isInitialPost ? 'initial_post' : explicit.is_discussion ? 'discussion_surface' : REPLY_RE.test(clean) ? 'reply_language' : null,
-      confidence: explicit.is_discussion ? 'surface' : isPeerReply || isInitialPost ? 'prompt' : REPLY_RE.test(clean) ? 'weak_prompt' : 'none',
+      evidence: promptRequirement.find((one) => (
+        one.requirement_kind === 'peer_reply'
+        || one.requirement_kind === 'comment'
+        || one.requirement_kind === 'feedback'
+        || one.requirement_kind === 'initial_post'
+      ))?.evidence ?? null,
+      kind: isPeerReply ? 'peer_reply' : isInitialPost ? 'initial_post' : isReplyRequired ? 'comment_or_feedback' : null,
+      confidence: isReplyRequired ? 'prompt' : 'none',
+      requirement: promptRequirement,
     },
     work_mode: {
       is_group: isGroupWork,
@@ -14902,6 +15049,14 @@ async function getDiscussionContext(args: {
   const maxEntry = Math.max(0, Number(args.max_entry ?? 50));
   const maxChar = Number(args.max_chars ?? 400);
 
+  const requirement = mergeRequirement(
+    requirementFromCanvas({ is_require_initial_post: !!(topic as any)?.require_initial_post }),
+    requirementFromPrompt(`${(topic as any)?.title ?? ''} ${(topic as any)?.message ?? ''}`),
+  ).map((one) => meetRequirement(one, userId === null ? null : {
+    my_top_level_post_count: myEntry.filter((entry: any) => entry?.parent_id == null).length,
+    my_reply_count: myEntry.filter((entry: any) => entry?.parent_id != null).length,
+  }));
+
   return {
     course_id: id,
     generated_at: new Date().toISOString(),
@@ -14919,7 +15074,153 @@ async function getDiscussionContext(args: {
     my_first_post_at: myEntry.map((one: any) => one?.created_at).filter(Boolean).sort()[0] ?? null,
     my_last_post_at: myLastAt,
     other_entry_after_my_last_post_count: otherEntryAfterMyLastPost.length,
+    requirement,
+    unmet_requirement: requirement.filter((one) => one.is_met === false),
     entry: limitRow(entry, maxEntry).map((one: any) => compactDiscussionEntry(one, !!args.include_entry_body, maxChar)),
+  };
+}
+
+async function getCourseRequirementGraph(args: {
+  course_id?: string | number;
+  include_view?: boolean;
+  max_discussion_view?: number;
+}): Promise<unknown> {
+  const id = courseId(args);
+  const includeView = args.include_view !== false;
+  const maxView = Math.max(0, Number(args.max_discussion_view ?? 20));
+  const [discussionResult, assignmentResult, quizResult, announcementResult, pageResult, self] = await Promise.all([
+    safe(() => canvasPaginate(`/courses/${id}/discussion_topics`)),
+    safe(() => canvasPaginate(`/courses/${id}/assignments`)),
+    safe(() => canvasPaginate(`/courses/${id}/quizzes`)),
+    safe(() => canvasPaginate('/announcements', { 'context_codes[]': `course_${id}` })),
+    safe(() => canvasGet(`/courses/${id}/pages`, { per_page: '20', 'include[]': 'body' })),
+    safe(() => canvasGet('/users/self')),
+  ]);
+  const userId = (self.value as any)?.id ?? null;
+  const row: Record<string, unknown>[] = [];
+  let viewCount = 0;
+
+  for (const topic of asArray(discussionResult.value)) {
+    const hit = mergeRequirement(
+      requirementFromCanvas({ is_require_initial_post: !!topic?.require_initial_post }),
+      requirementFromPrompt(`${topic?.title ?? ''} ${topic?.message ?? ''}`),
+    );
+    if (!hit.length) continue;
+    const wantsView = includeView && viewCount < maxView && userId !== null && hit.some((one) => (
+      one.requirement_kind === 'initial_post'
+      || one.requirement_kind === 'peer_reply'
+      || one.requirement_kind === 'comment'
+      || one.requirement_kind === 'feedback'
+      || one.requirement_kind === 'attendance'
+    ));
+    let progress: { my_top_level_post_count: number; my_reply_count: number } | null = null;
+    let viewStatus = 'skipped';
+    if (wantsView) {
+      viewCount += 1;
+      const view = await safe(() => canvasGet(`/courses/${id}/discussion_topics/${topic.id}/view`));
+      viewStatus = view.error ? endpointStatus(view.error) : 'ok';
+      if (!view.error) {
+        const entry = flattenDiscussionEntry(asArray((view.value as any)?.view));
+        const mine = entry.filter((one: any) => Number(one?.user_id) === Number(userId));
+        progress = {
+          my_top_level_post_count: mine.filter((one: any) => one?.parent_id == null).length,
+          my_reply_count: mine.filter((one: any) => one?.parent_id != null).length,
+        };
+      }
+    }
+    const requirement = hit.map((one) => meetRequirement(one, progress));
+    row.push({
+      source: 'discussion',
+      source_id: topic?.id ?? null,
+      title: topic?.title ?? null,
+      url: topic?.html_url ?? null,
+      view_status: viewStatus,
+      requirement,
+      unmet_requirement: requirement.filter((one) => one.is_met === false),
+    });
+  }
+
+  for (const assignment of asArray(assignmentResult.value)) {
+    const toolUrl = String(assignment?.external_tool_tag_attributes?.url ?? assignment?.url ?? '');
+    const hit = mergeRequirement(
+      requirementFromCanvas({
+        is_lockdown_browser: /lockdown|respondus/i.test(toolUrl),
+      }),
+      requirementFromPrompt(`${assignment?.name ?? ''} ${assignment?.description ?? ''} ${toolUrl}`),
+    );
+    if (!hit.length) continue;
+    const requirement = hit.map((one) => meetRequirement(one, null));
+    row.push({
+      source: 'assignment',
+      source_id: assignment?.id ?? null,
+      title: assignment?.name ?? null,
+      url: assignment?.html_url ?? null,
+      due_at: assignment?.due_at ?? null,
+      requirement,
+      unmet_requirement: requirement.filter((one) => one.is_met === false),
+    });
+  }
+
+  for (const quiz of asArray(quizResult.value)) {
+    const hit = mergeRequirement(
+      requirementFromCanvas({ is_lockdown_browser: !!quiz?.require_lockdown_browser }),
+      requirementFromPrompt(`${quiz?.title ?? ''} ${quiz?.description ?? ''}`),
+    );
+    if (!hit.length) continue;
+    const requirement = hit.map((one) => meetRequirement(one, null));
+    row.push({
+      source: 'quiz',
+      source_id: quiz?.id ?? null,
+      title: quiz?.title ?? null,
+      url: quiz?.html_url ?? null,
+      requirement,
+      unmet_requirement: requirement.filter((one) => one.is_met === false),
+    });
+  }
+
+  for (const page of asArray(pageResult.value)) {
+    const hit = requirementFromPrompt(`${page?.title ?? ''} ${page?.body ?? ''}`);
+    if (!hit.length) continue;
+    const requirement = hit.map((one) => meetRequirement(one, null));
+    row.push({
+      source: 'page',
+      source_id: page?.page_id ?? page?.url ?? null,
+      title: page?.title ?? null,
+      url: page?.html_url ?? null,
+      requirement,
+      unmet_requirement: requirement.filter((one) => one.is_met === false),
+    });
+  }
+
+  for (const announcement of asArray(announcementResult.value)) {
+    const hit = requirementFromPrompt(`${announcement?.title ?? ''} ${announcement?.message ?? ''}`);
+    if (!hit.length) continue;
+    const requirement = hit.map((one) => meetRequirement(one, null));
+    row.push({
+      source: 'announcement',
+      source_id: announcement?.id ?? null,
+      title: announcement?.title ?? null,
+      url: announcement?.html_url ?? null,
+      requirement,
+      unmet_requirement: requirement.filter((one) => one.is_met === false),
+    });
+  }
+
+  const requirement = row.flatMap((one) => asArray(one.requirement));
+  return {
+    course_id: id,
+    generated_at: new Date().toISOString(),
+    discussion_status: discussionResult.error ? endpointStatus(discussionResult.error) : 'ok',
+    assignment_status: assignmentResult.error ? endpointStatus(assignmentResult.error) : 'ok',
+    quiz_status: quizResult.error ? endpointStatus(quizResult.error) : 'ok',
+    announcement_status: announcementResult.error ? endpointStatus(announcementResult.error) : 'ok',
+    page_status: pageResult.error ? endpointStatus(pageResult.error) : 'ok',
+    discussion_view_count: viewCount,
+    discussion_view_cap: maxView,
+    item: row,
+    unmet_requirement: requirement.filter((one: any) => one.is_met === false),
+    unknown_requirement: requirement.filter((one: any) => one.is_met === null),
+    requirement_count: requirement.length,
   };
 }
 
@@ -15471,6 +15772,101 @@ async function getQuizContext(args: {
   };
 }
 
+async function getLockdownQuizAccess(args: {
+  course_id?: string | number;
+  include_question_preview?: boolean;
+  include_question_text?: boolean;
+}): Promise<unknown> {
+  const id = courseId(args);
+  const includePreview = args.include_question_preview !== false;
+  const includeText = args.include_question_text !== false;
+  const ACCESS_NOTE =
+    'The Lockdown Browser client check guards the web take flow, while quiz metadata, the current-user submission, and its score stay readable through this token without the official client. The question bank is served to a student token only during an active attempt, so a preview here reports what Canvas actually permits rather than a guess. The server never answers or submits; the agent prepares answers for the student.';
+
+  const quizList = await safe(() => canvasPaginate<any>(`/courses/${id}/quizzes`));
+  if (quizList.error) {
+    return {
+      course_id: id,
+      generated_at: new Date().toISOString(),
+      resolution_status: 'skipped',
+      reason: `quiz list blocked: ${quizList.error}`,
+      quiz_list_status: endpointStatus(quizList.error),
+      access_note: ACCESS_NOTE,
+    };
+  }
+  const all = (quizList.value as any[]) ?? [];
+  const flagged = all.filter(
+    (one: any) =>
+      one?.require_lockdown_browser ||
+      one?.require_lockdown_browser_for_monitoring ||
+      one?.respondus_lock_down_browser === true,
+  );
+
+  const row = await Promise.all(
+    flagged.map(async (one: any) => {
+      const quizId = String(one.id);
+      const submission = await safe(() =>
+        canvasGet(`/courses/${id}/quizzes/${quizId}/submission`, { 'include[]': ['submission', 'quiz'] }),
+      );
+      const submissionValue = compactQuizSubmission(submission.value);
+      const submissionId = submissionValue?.quiz_submission_id ?? null;
+      const [question, submissionQuestion] = await Promise.all([
+        includePreview
+          ? safe(() => canvasPaginate<any>(`/courses/${id}/quizzes/${quizId}/questions`))
+          : Promise.resolve({ value: null as unknown as any[], error: 'include_question_preview false; question preview skipped' }),
+        includePreview && submissionId
+          ? safe(() => canvasPaginate<any>(`/quiz_submissions/${submissionId}/questions`, { 'include[]': 'quiz_question' }))
+          : Promise.resolve({ value: null as unknown as any[], error: submissionId ? null : 'no submission; submission questions skipped' }),
+      ]);
+      const questionValue = (question.value as any[]) ?? [];
+      const bankBlocked = includePreview && questionValue.length === 0 && !!question.error;
+      const submissionQuestionValue = ((submissionQuestion.value as any[]) ?? []).map((one: any) => one?.quiz_question ?? one);
+      return {
+        quiz_id: quizId,
+        title: one?.title ?? null,
+        points_possible: one?.points_possible ?? null,
+        due_at: one?.due_at ?? null,
+        allowed_attempt_count: one?.allowed_attempts ?? null,
+        question_count: one?.question_count ?? null,
+        is_monitor_required: !!one?.require_lockdown_browser_for_monitoring,
+        has_monitor_settings: !!one?.lockdown_browser_monitor_to_settings,
+        has_access_code: typeof one?.access_code === 'string' ? one.access_code.length > 0 : null,
+        question_readable: includePreview
+          ? (questionValue.length > 0 ? 'ok' : (submissionQuestionValue.length > 0 ? 'via_submission' : endpointStatus(question.error)))
+          : 'skipped',
+        returned_question_count: includePreview ? (questionValue.length || submissionQuestionValue.length) : 0,
+        question_source: bankBlocked && submissionQuestionValue.length > 0 ? 'submission' : (questionValue.length > 0 ? 'question_bank' : null),
+        question: includePreview
+          ? (questionValue.length > 0 ? questionValue : submissionQuestionValue).slice(0, 50).map((item: any) => ({
+              question_id: item?.id ?? item?.question_id ?? null,
+              position: item?.position ?? null,
+              question_type: item?.question_type ?? null,
+              points_possible: item?.points_possible ?? null,
+              question_text: includeText ? stripHtml(item?.question_text ?? '') : null,
+            }))
+          : [],
+        submission_readable: submission.error ? endpointStatus(submission.error) : (submissionValue ? 'ok' : 'blocked_or_absent'),
+        question_note: bankBlocked
+          ? 'Canvas serves the question bank to a student token only during an active attempt; metadata and the current-user submission with its score stay readable.'
+          : null,
+        submission: submissionValue,
+        score: submissionValue?.kept_score ?? submissionValue?.score ?? null,
+      };
+    }),
+  );
+
+  return {
+    course_id: id,
+    generated_at: new Date().toISOString(),
+    resolution_status: 'ok',
+    quiz_list_status: 'ok',
+    quiz_count: all.length,
+    lockdown_quiz_count: row.length,
+    quiz: row,
+    access_note: ACCESS_NOTE,
+  };
+}
+
 async function getAssignmentContext(args: {
   course_id?: string | number;
   assignment_id: string | number;
@@ -16004,12 +16400,182 @@ const handler: Record<string, (args: any) => Promise<unknown>> = {
   list_discussion: (args) => canvasPaginate(`/courses/${courseId(args)}/discussion_topics`),
   get_discussion: (args) => canvasGet(`/courses/${courseId(args)}/discussion_topics/${args.discussion_id}`),
   get_discussion_context: (args) => getDiscussionContext(args),
+  get_course_requirement_graph: (args) => getCourseRequirementGraph(args),
   list_quiz: (args) => canvasPaginate(`/courses/${courseId(args)}/quizzes`),
   get_quiz: (args) => canvasGet(`/courses/${courseId(args)}/quizzes/${args.quiz_id}`),
   get_quiz_question: (args) => canvasPaginate(`/courses/${courseId(args)}/quizzes/${args.quiz_id}/questions`),
   get_quiz_context: (args) => getQuizContext(args),
+  get_lockdown_quiz_access: (args) => getLockdownQuizAccess(args),
+  get_lockdown_quiz_take: (args) => getLockdownQuizTake(args),
   extract_course: (args) => extractCourse(courseId(args)),
 };
+
+async function getLockdownQuizTake(args: {
+  course_id?: string | number;
+  quiz_id: string | number;
+  session_cookie?: string;
+  preview?: boolean;
+}): Promise<unknown> {
+  const id = courseId(args);
+  const quizId = String(args.quiz_id);
+  const preview = args.preview !== false;
+  const includeTextFlag = (value: unknown): string | null => (typeof value === 'string' ? stripHtml(value).slice(0, 400) : null);  let sessionCookie = args.session_cookie?.trim();
+  let sessionSource: string | null = sessionCookie ? 'explicit' : null;
+  let triedStores: string[] | null = null;
+  if (!preview && !sessionCookie) {
+    const extracted = await extractCanvasSessionCookie();
+    triedStores = extracted.tried;
+    if (extracted.cookie_value) {
+      sessionCookie = extracted.cookie_value;
+      sessionSource = `${extracted.store} (auto)`;
+    }
+  }
+  const LDB_UA =
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.7444.176 Safari/537.36 CLDB 2.1.5.06';
+
+  const quiz = await safe(() => canvasGet(`/courses/${id}/quizzes/${quizId}`));
+  if (quiz.error) {
+    return {
+      course_id: id,
+      generated_at: new Date().toISOString(),
+      resolution_status: 'skipped',
+      reason: `quiz not readable: ${quiz.error}`,
+      quiz_status: endpointStatus(quiz.error),
+    };
+  }
+  const quizRow = quiz.value as any;
+
+  const existing = await safe(() =>
+    canvasGet(`/courses/${id}/quizzes/${quizId}/submission`, { 'include[]': ['submission', 'quiz'] }),
+  );
+  const existingSubmission = compactQuizSubmission(existing.value);
+  if (existingSubmission && existingSubmission.workflow_state === 'complete') {
+    return {
+      course_id: id,
+      generated_at: new Date().toISOString(),
+      resolution_status: 'skipped',
+      reason: 'the current user already has a completed attempt for this quiz',
+      quiz: compactQuiz(quizRow),
+      submission: existingSubmission,
+      score: existingSubmission.score,
+      start_status: 'not_attempted',
+    };
+  }
+
+  const headers: Record<string, string> = { 'User-Agent': LDB_UA };
+  if (sessionCookie) {
+    const bare = sessionCookie.replace(/^canvas_session=/i, '').replace(/;.*$/, '');
+    headers.Cookie = `canvas_session=${bare}`;
+  }
+  let attemptQuestions: Array<{ question_id: string | null; question_type: string | null; points_possible: number | null; question_text: string | null }> = [];
+  let attemptQuestionError: string | null = null;
+  let startRaw: { status: number; body: string } | null = null;
+  const attemptStart = await (async (): Promise<{ value: { status: number; body: string } | string | null; error: string | null }> => {
+    const res = await safe(async () => {
+      const response = await canvasFetch(
+        new URL(`/api/v1/courses/${id}/quizzes/${quizId}/submissions`, BASE_URL),
+        { method: 'POST', headers: { ...headers, Accept: 'application/json' } },
+      );
+      return { status: response.status, body: await response.text() };
+    });
+    startRaw = res.error ? null : (res.value as { status: number; body: string });
+    const ok = startRaw != null && startRaw.status >= 200 && startRaw.status < 300;
+    if (!ok) {
+      if (!sessionCookie) return res;
+      const takePage = await safe(() =>
+        canvasFetch(
+          new URL(`/courses/${id}/quizzes/${quizId}/take`, BASE_URL),
+          { headers: { ...headers, Accept: 'text/html' } },
+        ).then((r) => r.text()),
+      );
+      return takePage.error ? res : takePage;
+    }
+    let submissionId: string | null = null;
+    try {
+      submissionId = JSON.parse(startRaw!.body)?.quiz_submissions?.[0]?.id ?? null;
+    } catch {
+      submissionId = null;
+    }
+    if (!submissionId) {
+      attemptQuestionError = `attempt start returned no submission id (HTTP ${startRaw?.status})`;
+      return res;
+    }
+    const opened = await safe(() =>
+      canvasFetch(
+        new URL(`/api/v1/quiz_submissions/${submissionId}/questions?include%5B%5D=quiz_question`, BASE_URL),
+        { headers: { ...headers, Accept: 'application/json' } },
+      ).then((r) => r.text()),
+    );
+    try {
+      const openedBody = JSON.parse((opened.value as string) ?? '{}');
+      const list = Array.isArray(openedBody?.quiz_submission_questions) ? openedBody.quiz_submission_questions : [];
+      attemptQuestions = list.map((item: any) => {
+        const question = item?.quiz_question ?? item ?? {};
+        return {
+          question_id: question?.id ?? question?.question_id ?? null,
+          question_type: question?.question_type ?? null,
+          points_possible: question?.points_possible ?? null,
+          question_text: includeTextFlag(question?.question_text) ?? null,
+        };
+      });
+      if (!list.length) attemptQuestionError = 'attempt open but Canvas returned no questions';
+    } catch {
+      attemptQuestionError = 'attempt questions unreadable after start';
+    }
+    return res;
+  })();
+  const takeBody = attemptStart.value;
+  const takeHtml = typeof takeBody === 'string' ? takeBody : null;
+  const questionHtml = takeHtml
+    ? Array.from(takeHtml.matchAll(/<div[^>]*class="[^"]*question[^"]*"[^>]*>[\s\S]*?<\/div>/g))
+        .map((match) => match[0])
+        .slice(0, 60)
+    : [];
+  const parsed = questionHtml
+    .map((block) => {
+      const questionId = block.match(/question[_-]?[iI]d="(\d+)"/)?.[1] ?? block.match(/id="question_(\d+)"/)?.[1] ?? null;
+      const text = block.match(/class="[^"]*question_text[^"]*"[^>]*>([\s\S]*?)<\/div>/)?.[1] ?? block.replace(/<[^>]+>/g, ' ');
+      const choice = Array.from(block.matchAll(/<input[^>]*name="question\[(\d+)\]"\s*[^>]*value="([^"]*)"/g)).map((m) => ({
+        question_id: m[1],
+        answer_id: m[2],
+      }));
+      return { question_id: questionId ?? choice[0]?.question_id ?? null, question_text: stripHtml(text).slice(0, 400), choice };
+    })
+    .filter((one) => one.question_id || one.question_text);
+
+  return {
+    course_id: id,
+    generated_at: new Date().toISOString(),
+    resolution_status: 'ok',
+    preview,
+    session_source: sessionSource,
+    session_store_candidates: triedStores,
+    quiz: compactQuiz(quizRow),
+    existing_submission: existingSubmission,
+    start_status: preview
+      ? 'not_attempted'
+      : (attemptStart.error
+          ? endpointStatus(attemptStart.error)
+          : (attemptStart.value && typeof attemptStart.value !== 'string' && attemptStart.value.status != null
+              ? `http_${attemptStart.value.status}`
+              : 'unknown')),
+    start_http: (attemptStart.value && typeof attemptStart.value !== 'string' ? attemptStart.value.status : null) ?? null,
+    start_body_excerpt:
+      attemptStart.value && typeof attemptStart.value !== 'string' && attemptStart.value.status != null && attemptStart.value.status >= 400
+        ? attemptStart.value.body.slice(0, 200)
+        : null,
+    start_note: preview
+      ? 'preview true: the attempt was not started. Set preview false to begin an attempt with the token\'s own session; a time-limited quiz starts its timer the moment the attempt is opened.'
+      : null,
+    start_error: attemptStart.error,
+    html_flow_used: takeHtml != null,
+    returned_question_count: preview ? 0 : parsed.length,
+    question: preview ? [] : parsed,
+    answer_note:
+      'The server never answers or submits. With preview false the attempt is opened and its questions returned; the student answers in whatever client they choose, including the official Lockdown Browser, which resumes the open attempt.',
+  };
+}
+
 
 Object.assign(handler, {
   // Legacy aliases kept for existing saved MCP calls; listTools exposes the canonical names above.
@@ -16030,7 +16596,7 @@ Object.assign(handler, {
 // ============================================================================
 
 const server = new Server(
-  { name: 'better-canvas-mcp', version: '0.4.0' },
+  { name: 'better-canvas-mcp', version: "0.7.0" },
   { capabilities: { tools: {} } },
 );
 

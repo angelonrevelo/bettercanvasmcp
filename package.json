@@ -1,6 +1,6 @@
 {
   "name": "better-canvas-mcp",
-  "version": "0.4.0",
+  "version": "0.7.0",
   "description": "Read-only Canvas LMS MCP for students. Reports the edges popular Canvas MCPs skip: due-date overrides, New Quizzes, group work, and file text.",
   "type": "module",
   "bin": {
@@ -17,7 +17,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/check-surface.mjs",
+    "test": "node scripts/check-surface.mjs && node --import tsx --test scripts/requirement.test.ts",
     "gate": "npm run typecheck && npm run test"
   },
   "engines": {

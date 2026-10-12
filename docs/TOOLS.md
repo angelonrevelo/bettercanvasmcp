@@ -73,11 +73,14 @@ Every read tool takes an optional `course_id` and otherwise uses `CANVAS_COURSE_
 | `get_submission_feedback_context` | Fetch read-only feedback context for the current-user assignment submission: comments, rubric assessment keys, submission history summary, attachment count, and rubric/document annotation read-state endpoints when Canvas permits them. |
 | `list_discussion` | List all discussion topics in the course. |
 | `get_discussion` | Fetch a single discussion topic with its message body. |
-| `get_discussion_context` | Fetch one discussion topic plus its Canvas entry tree/view, flattened counts, current-user post/reply counts, unread entry count, and optional bounded entry bodies. |
+| `get_discussion_context` | Fetch one discussion topic plus entry counts and a deterministic requirement graph for the current user. |
+| `get_course_requirement_graph` | Course-wide requirement rows from Canvas fields and prompt keywords: initial post, peer reply, comment, feedback, attendance, form, and Lockdown Browser. Forms and lockdown exams are never marked done. |
 | `list_quiz` | List all quizzes in the course (may 404 if disabled at course level). |
 | `get_quiz` | Fetch a single quiz with metadata + description. |
 | `get_quiz_question` | List all questions for a quiz (may 403 if you lack permission). |
 | `get_quiz_context` | Fetch Classic Quiz context in one read-only call: quiz metadata, questions/question groups when readable, current-user quiz submission, optional submission events, linked files/URLs, and assignment mapping. |
+| `get_lockdown_quiz_access` | Accessibility view of Lockdown Browser exams in one read-only call: quizzes Canvas flags `require_lockdown_browser`, question bank preview, and the current-user submission with its score, all readable through the token API without the Respondus client. |
+| `get_lockdown_quiz_take` | Open or resume the attempt for a Lockdown Browser quiz and return its questions. `preview true` (default) touches nothing; `preview false` starts the attempt — a time-limited quiz starts its timer. Reads the `canvas_session` cookie from a signed-in browser automatically when needed. The server never answers or submits. |
 | `extract_course` | Extract everything in the course (modules, pages, assignments, discussions, quizzes, announcements, files, plus categorized embeds — youtube/gsheets/gforms/etc). Single efficient call. Returns the same structure as the canvas-toolkit extractor. |
 
 

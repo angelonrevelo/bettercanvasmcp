@@ -30,6 +30,8 @@ for (const name of [
   'resolve_canvas_link',
   'request_canvas_api',
   'get_canvas_api_capability',
+  'get_course_requirement_graph',
+  'get_lockdown_quiz_access',
 ]) {
   expect(`tool ${name}`, src.includes(`name: '${name}'`));
 }

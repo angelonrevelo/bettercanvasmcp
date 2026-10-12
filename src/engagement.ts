@@ -19,6 +19,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { requirementFromPrompt } from './requirement.js';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -48,7 +49,7 @@ if (!TOKEN) {
 }
 
 const BASE_URL = BASE_URL_RAW.replace(/\/+$/, '');
-const USER_AGENT = 'better-canvas-mcp/0.4.0 (+https://github.com/angelonrevelo/bettercanvasmcp)';
+const USER_AGENT = 'better-canvas-mcp/0.5.0 (+https://github.com/angelonrevelo/bettercanvasmcp)';
 
 function canvasHeader(accept: string): Record<string, string> {
   return { Authorization: `Bearer ${TOKEN}`, Accept: accept, 'User-Agent': USER_AGENT };
@@ -368,15 +369,7 @@ async function needsReply(args: { course_id?: string; max_topics_per_course?: nu
 // Tool: list_peer_response_requirement
 // ============================================================================
 
-const PEER_RESPONSE_PATTERNS: Array<{ label: string; regex: RegExp }> = [
-  { label: 'reply-to-N-classmates', regex: /reply to (?:at least )?(\w+|\d+) (?:classmates?|peers?|students?)/i },
-  { label: 'respond-to-N-peers', regex: /respond to (?:at least )?(\w+|\d+) (?:classmates?|peers?|posts?)/i },
-  { label: 'comment-on-peers', regex: /comment on (?:a )?peer'?s? post/i },
-  { label: 'reply-to-others', regex: /reply to (?:other|fellow|two|three) (?:students?|classmates?|peers?)/i },
-  { label: 'engage-with-peers', regex: /engage with (?:your )?(?:peers?|classmates?)/i },
-  { label: 'discuss-with-classmates', regex: /discuss(?:ion)? with (?:your )?classmates?/i },
-];
-
+// Requirement kinds come from src/requirement.ts so discussion, assignment, and engagement scans share one detector.
 function stripHtml(s: string): string {
   return s.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -390,6 +383,8 @@ interface PeerReqHit {
   matched_excerpt: string;
   url: string;
   due_at?: string | null;
+  count_required: number | null;
+  detector: string;
 }
 
 async function peerResponseRequirements(args: { course_id?: string }): Promise<PeerReqHit[]> {
@@ -408,45 +403,53 @@ async function peerResponseRequirements(args: { course_id?: string }): Promise<P
 
     for (const a of assignments) {
       const text = stripHtml(a.description ?? '');
-      if (!text) continue;
-      for (const p of PEER_RESPONSE_PATTERNS) {
-        const m = text.match(p.regex);
-        if (m) {
-          const idx = m.index ?? 0;
-          hits.push({
-            course_id: courseId,
-            source: 'assignment',
-            id: a.id,
-            title: a.name,
-            matched_label: p.label,
-            matched_excerpt: text.slice(Math.max(0, idx - 40), Math.min(text.length, idx + 160)),
-            url: a.html_url,
-            due_at: a.due_at,
-          });
-          break;
-        }
+      const requirement = requirementFromPrompt(text).filter((one) => (
+        one.requirement_kind === 'peer_reply'
+        || one.requirement_kind === 'comment'
+        || one.requirement_kind === 'feedback'
+        || one.requirement_kind === 'initial_post'
+        || one.requirement_kind === 'attendance'
+        || one.requirement_kind === 'form'
+      ));
+      for (const one of requirement) {
+        hits.push({
+          course_id: courseId,
+          source: 'assignment',
+          id: a.id,
+          title: a.name,
+          matched_label: one.requirement_kind,
+          matched_excerpt: one.evidence,
+          url: a.html_url,
+          due_at: a.due_at,
+          count_required: one.count_required,
+          detector: one.detector,
+        });
       }
     }
 
     for (const d of discussions) {
       const text = stripHtml(d.message ?? '');
-      if (!text) continue;
-      for (const p of PEER_RESPONSE_PATTERNS) {
-        const m = text.match(p.regex);
-        if (m) {
-          const idx = m.index ?? 0;
-          hits.push({
-            course_id: courseId,
-            source: 'discussion',
-            id: d.id,
-            title: d.title,
-            matched_label: p.label,
-            matched_excerpt: text.slice(Math.max(0, idx - 40), Math.min(text.length, idx + 160)),
-            url: d.html_url,
-            due_at: d.todo_date ?? null,
-          });
-          break;
-        }
+      const requirement = requirementFromPrompt(`${d.title ?? ''} ${text}`).filter((one) => (
+        one.requirement_kind === 'peer_reply'
+        || one.requirement_kind === 'comment'
+        || one.requirement_kind === 'feedback'
+        || one.requirement_kind === 'initial_post'
+        || one.requirement_kind === 'attendance'
+        || one.requirement_kind === 'form'
+      ));
+      for (const one of requirement) {
+        hits.push({
+          course_id: courseId,
+          source: 'discussion',
+          id: d.id,
+          title: d.title,
+          matched_label: one.requirement_kind,
+          matched_excerpt: one.evidence,
+          url: d.html_url,
+          due_at: d.todo_date ?? null,
+          count_required: one.count_required,
+          detector: one.detector,
+        });
       }
     }
   }
@@ -707,7 +710,7 @@ Object.assign(handler, {
 });
 
 const server = new Server(
-  { name: 'better-canvas-engagement', version: '0.4.0' },
+  { name: 'better-canvas-engagement', version: '0.5.0' },
   { capabilities: { tools: {} } },
 );
 

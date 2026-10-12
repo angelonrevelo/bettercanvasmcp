@@ -25,13 +25,14 @@ What this repository will not do:
 - It does not take a token for anyone but the person running it. The token stays in that machine's environment.
 - It does not ship a hosted server. A public Canvas MCP without a per-user gate is how the largest one retired its hosted endpoint.
 
-The process sends `User-Agent: better-canvas-mcp/0.4.0 (+https://github.com/angelonrevelo/bettercanvasmcp)` on every Canvas request.
+The process sends `User-Agent: better-canvas-mcp/0.7.0 (+https://github.com/angelonrevelo/bettercanvasmcp)` on every Canvas request.
 
 ## What it catches
 
 - **Due dates that are not the assignment's base date.** Overrides, all-dates, course to-do, and the effective due date for the token holder only. If Canvas blocks that map, the result is `blocked_or_absent`, not a guess about other students.
 - **New Quizzes and other LTI tools.** Catalog, items, and line items when the token can see them. Blocked internals stay blocked. They are not treated as "done."
 - **Instructions that live outside the assignment.** Syllabus, pages, announcements, module locks, and text extracted from linked files (PDF via `pdftotext`, DOCX via unzip, images via `tesseract` when it is installed).
+- **What the prompt requires.** `get_course_requirement_graph` turns Canvas fields and the prompt into rows: initial post, peer reply, comment, feedback, attendance, and form. It reads discussions, assignments, quizzes, announcements, and the first wiki pages. A count in the words ("reply to two classmates") is the pass line. A form stays unknown. A Lockdown Browser exam stays unknown until the student takes it — but `get_lockdown_quiz_access` reads its metadata, the current-user submission, and the score through the token API, so the agent sees the whole picture without the official client.
 - **Group work and peer replies.** Your own groups, their files and discussions, peer-review rows, and a second binary that flags reply language in prompts.
 - **Old course shells.** Term, enrollment, and concluded state, so a leftover course is not treated as this term's work.
 - **Anything else the token can GET.** `request_canvas_api` accepts only `/api/...` paths. `get_canvas_api_capability` reports `ok`, `blocked_or_absent`, `skipped`, or `error` for a fixed probe list.
