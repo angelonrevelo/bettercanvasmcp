@@ -117,11 +117,12 @@ function flag(name: string): string | undefined {
   return i !== -1 && argv[i + 1] ? argv[i + 1] : undefined;
 }
 
-const BASE_URL_RAW = flag('base-url') ?? process.env.CANVAS_BASE_URL;
+const BASE_URL_RAW = flag('base-url') ?? process.env.CANVAS_BASE_URL ?? process.env.CANVAS_DEFAULT_HOST;
 const TOKEN = flag('token') ?? process.env.CANVAS_API_TOKEN;
 const DEFAULT_COURSE_ID = flag('course') ?? process.env.CANVAS_COURSE_ID;
 const REQUEST_TIMEOUT_MS = Number(flag('request-timeout-ms') ?? process.env.CANVAS_REQUEST_TIMEOUT_MS ?? 30000);
 const REQUEST_RETRY_COUNT = Number(flag('request-retry-count') ?? process.env.CANVAS_REQUEST_RETRY_COUNT ?? 2);
+const ALLOW_WRITES = (flag('allow-writes') ?? process.env.CANVAS_ALLOW_WRITES ?? '') === '1';
 
 if (!BASE_URL_RAW) {
   console.error('[Canvas MCP] Missing CANVAS_BASE_URL. Pass --base-url or set the env var to your Canvas host, for example https://canvas.example.edu');
@@ -2517,6 +2518,22 @@ const tool: MCPTool[] = [
         session_cookie: {
           type: 'string',
           description: 'Optional canvas_session cookie for the HTML take flow when the API refuses to start the attempt. Only sent when preview is false.',
+        },
+      },
+      required: ['quiz_id'],
+    },
+  },
+  {
+    name: 'get_lockdown_quiz_launch',
+    description: 'Launch the official Lockdown Browser client for a flagged quiz: resolves the rldb: launch URL via the session-authenticated launch page and opens it with the OS opener. Starting the client does not answer or submit.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        course_id: { type: 'string', description: COURSE_ID_DESC },
+        quiz_id: { type: 'string', description: 'Lockdown Browser quiz id' },
+        session_cookie: {
+          type: 'string',
+          description: 'Optional canvas_session cookie; resolved automatically from a signed-in browser when omitted.',
         },
       },
       required: ['quiz_id'],
@@ -11942,6 +11959,50 @@ async function requestCanvasApi(args: {
   };
 }
 
+async function requestCanvasWrite(args: {
+  path: string;
+  method?: string;
+  param?: Record<string, unknown>;
+  body?: Record<string, unknown>;
+}): Promise<unknown> {
+  const allow = ALLOW_WRITES;
+  const path = String(args.path ?? '').trim();
+  if (!/^\/api\/v1\//.test(path)) {
+    return { generated_at: new Date().toISOString(), ok: false, reason: 'write paths begin with /api/v1/' };
+  }
+  if (!allow) {
+    return {
+      generated_at: new Date().toISOString(),
+      ok: false,
+      reason: 'writes are opt-in: set CANVAS_ALLOW_WRITES=1 (env) or pass --allow-writes to enable. Nothing was sent to Canvas.',
+    };
+  }
+  const method = String(args.method ?? 'POST').toUpperCase();
+  const url = new URL(String(path), BASE_URL);
+  const param = normalizeParam(args.param);
+  applyParam(url, param);
+  const res = await canvasFetch(url, {
+    method,
+    headers: { ...canvasHeader('application/json'), 'Content-Type': 'application/json' },
+    body: JSON.stringify(args.body ?? {}),
+  });
+  const body = await res.text();
+  let parsed: unknown = body;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    parsed = body.slice(0, 4000);
+  }
+  return {
+    generated_at: new Date().toISOString(),
+    path,
+    method,
+    ok: res.ok,
+    status: res.status,
+    response: parsed,
+  };
+}
+
 function httpStatusFromError(error: string | null): number | null {
   const match = String(error ?? '').match(/Canvas\s+(\d{3})\b/);
   return match ? Number(match[1]) : null;
@@ -16407,8 +16468,84 @@ const handler: Record<string, (args: any) => Promise<unknown>> = {
   get_quiz_context: (args) => getQuizContext(args),
   get_lockdown_quiz_access: (args) => getLockdownQuizAccess(args),
   get_lockdown_quiz_take: (args) => getLockdownQuizTake(args),
+  get_lockdown_quiz_launch: (args) => getLockdownQuizLaunch(args),
+  request_canvas_write: (args) => requestCanvasWrite(args),
   extract_course: (args) => extractCourse(courseId(args)),
 };
+
+async function getLockdownQuizLaunch(args: {
+  course_id?: string | number;
+  quiz_id: string | number;
+  session_cookie?: string;
+}): Promise<unknown> {
+  const id = courseId(args);
+  const quizId = String(args.quiz_id);
+  const takeUrl = `${BASE_URL}/courses/${id}/quizzes/${quizId}/take`;
+  let launchHref: string | null = null;
+  const sessionCookie = args.session_cookie?.trim();
+  const cookieHeader = sessionCookie
+    ? `canvas_session=${sessionCookie.replace(/^canvas_session=/i, '').replace(/;.*$/, '')}`
+    : null;
+  const extracted = await extractCanvasSessionCookie();
+  const resolvedCookie = cookieHeader ?? (extracted.cookie_value ? `canvas_session=${extracted.cookie_value}` : null);
+  if (resolvedCookie) {
+    const page = await safe(() =>
+      canvasFetch(
+        new URL(`/courses/${id}/quizzes/${quizId}/lockdown_browser_launch`, BASE_URL),
+        {
+          headers: {
+            Accept: 'text/html',
+            Cookie: resolvedCookie,
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.7444.176 Safari/537.36 CLDB 2.1.5.06',
+          },
+        },
+      ).then((r) => r.text()),
+    );
+    const html = typeof page.value === 'string' ? page.value : null;
+    if (html) {
+      const match = html.match(/rldb:[^"'\s<]+/i);
+      if (match) launchHref = match[0].replace(/&amp;/g, '&');
+    }
+  }
+  const platform = process.platform;
+  const launchUrl = launchHref ?? takeUrl;
+  let launched = false;
+  let launchCommand: string | null = null;
+  if (launchUrl && (platform === 'darwin' || platform === 'win32' || platform === 'linux')) {
+    const command = platform === 'darwin' ? 'open' : platform === 'win32' ? 'start' : 'xdg-open';
+    launchCommand = `${command} ${JSON.stringify(launchUrl)}`;
+    try {
+      if (platform === 'win32') {
+        await execFileAsync('cmd', ['/c', 'start', '', launchUrl]);
+      } else {
+        await execFileAsync(command, [launchUrl]);
+      }
+      launched = true;
+    } catch (err) {
+      launched = false;
+      return {
+        generated_at: new Date().toISOString(),
+        course_id: id,
+        quiz_id: quizId,
+        ok: false,
+        reason: `could not launch the Lockdown Browser: ${err instanceof Error ? err.message : String(err)}`,
+        launch_url: launchUrl,
+        launch_command: launchCommand,
+      };
+    }
+  }
+  return {
+    generated_at: new Date().toISOString(),
+    course_id: id,
+    quiz_id: quizId,
+    ok: launched,
+    launch_url: launchUrl,
+    launch_command: launchCommand,
+    client_check: 'the official Lockdown Browser client verifies this launch; this server does not answer or submit',
+    session_source: sessionCookie ? 'explicit' : (extracted.store ? `${extracted.store} (auto)` : null),
+    tried_stores: extracted.tried,
+  };
+}
 
 async function getLockdownQuizTake(args: {
   course_id?: string | number;

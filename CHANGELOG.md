@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 — 2026-10-13
+
+- Add `request_canvas_write`, an opt-in write passthrough for any `/api/v1` path. It refuses before anything reaches Canvas unless `CANVAS_ALLOW_WRITES=1` (env) or `--allow-writes` is passed — the caller decides what to send. Instructor writes, grading, announcements, and submitting on the student's behalf all flow through it.
+- Add `get_lockdown_quiz_launch`: resolves the rldb: launch URL through the session-authenticated launch page and hands it to the OS opener, so the official Lockdown Browser client starts from this server when wanted.
+- Adopt commander for the CLI and add the owed report: `better-canvas-mcp owed --course <id>` prints what the token holder still owes (assignment rows without a submission, planner notes as context). Exit 0 on success, exit 1 on missing host or token.
+- `CANVAS_DEFAULT_HOST` may now provide the base URL when `CANVAS_BASE_URL` is unset.
+
 ## 0.7.0 — 2026-10-13
 
 - Add `get_lockdown_quiz_take`. Opening or resuming a Lockdown Browser quiz attempt and reading its questions is now one call. `preview true` (default) inspects without starting anything; `preview false` opens the attempt, and a time-limited quiz starts its timer the moment it opens. The server never answers or submits — the student finishes in whatever client they choose, and the official client resumes the open attempt.

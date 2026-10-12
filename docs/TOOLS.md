@@ -81,6 +81,8 @@ Every read tool takes an optional `course_id` and otherwise uses `CANVAS_COURSE_
 | `get_quiz_context` | Fetch Classic Quiz context in one read-only call: quiz metadata, questions/question groups when readable, current-user quiz submission, optional submission events, linked files/URLs, and assignment mapping. |
 | `get_lockdown_quiz_access` | Accessibility view of Lockdown Browser exams in one read-only call: quizzes Canvas flags `require_lockdown_browser`, question bank preview, and the current-user submission with its score, all readable through the token API without the Respondus client. |
 | `get_lockdown_quiz_take` | Open or resume the attempt for a Lockdown Browser quiz and return its questions. `preview true` (default) touches nothing; `preview false` starts the attempt — a time-limited quiz starts its timer. Reads the `canvas_session` cookie from a signed-in browser automatically when needed. The server never answers or submits. |
+| `get_lockdown_quiz_launch` | Resolve the rldb: launch URL for a Lockdown Browser quiz and hand it to the OS opener so the official client starts there. Never answers or submits. |
+| `request_canvas_write` | Opt-in write passthrough (POST/PUT/DELETE) to any /api/v1 path. Refuses before reaching Canvas unless `CANVAS_ALLOW_WRITES=1` or `--allow-writes` is set. What it sends is what the caller decided. |
 | `extract_course` | Extract everything in the course (modules, pages, assignments, discussions, quizzes, announcements, files, plus categorized embeds — youtube/gsheets/gforms/etc). Single efficient call. Returns the same structure as the canvas-toolkit extractor. |
 
 

@@ -7,7 +7,7 @@
 
 # better-canvas-mcp
 
-**A read-only Canvas MCP for students whose real work is not on the assignment list.**
+**A Canvas MCP for students whose real work is not on the assignment list.** Reads everything Canvas exposes to the token holder, writes only when the caller asks (`CANVAS_ALLOW_WRITES=1`), and launches the official Lockdown Browser client when asked.
 
 The popular Canvas MCPs are instructor consoles. They create assignments, post grades, and send messages. A student token cannot do that, and the work a student actually owes is often somewhere else: a due-date override, a New Quiz that Canvas will not open over the API, a file linked from the syllabus, a reply quota buried in a discussion, a group workspace that is not the course files tab.
 
@@ -30,6 +30,17 @@ Connecting a personal token works with your own Canvas account, and the token st
 - **Anything else the token can GET.** `request_canvas_api` accepts only `/api/...` paths. `get_canvas_api_capability` reports `ok`, `blocked_or_absent`, `skipped`, or `error` for a fixed probe list.
 
 The full tool list is [docs/TOOLS.md](docs/TOOLS.md).
+
+## Owed report
+
+One command prints everything the token holder still owes in one course — assignment rows where Canvas shows no submission, plus planner notes as context:
+
+```bash
+npm run owed -- --course <course_id>
+# or the built binary: better-canvas-mcp owed --course <course_id>
+```
+
+Exit 0 with the list (or `Nothing owed`), exit 1 on a missing host or token. Planner rows are context, not proof — a planner item stays listed until Canvas shows the work submitted.
 
 ## Quick start
 
