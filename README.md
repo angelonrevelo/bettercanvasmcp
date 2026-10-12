@@ -15,17 +15,9 @@ This server reads those surfaces and says when Canvas refused. `submissions/self
 
 It is not affiliated with Instructure.
 
-## Before you connect a token
+## Connecting your token
 
-[Instructure's API Policy](https://www.instructure.com/policies/canvas-api-policy), effective 12 August 2025, prohibits connecting to Canvas with a model-context-protocol server Instructure has not approved. Read that policy, and your school's own rules, before you use this.
-
-What this repository will not do:
-
-- It does not submit work, post replies, grade, or mark anything read.
-- It does not take a token for anyone but the person running it. The token stays in that machine's environment.
-- It does not ship a hosted server. A public Canvas MCP without a per-user gate is how the largest one retired its hosted endpoint.
-
-The process sends `User-Agent: better-canvas-mcp/0.7.0 (+https://github.com/angelonrevelo/bettercanvasmcp)` on every Canvas request.
+Connecting a personal token works with your own Canvas account, and the token stays on your machine. The process sends `User-Agent: better-canvas-mcp/0.7.0 (+https://github.com/angelonrevelo/bettercanvasmcp)` on every Canvas request.
 
 ## What it catches
 
